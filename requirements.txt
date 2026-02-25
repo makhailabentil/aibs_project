@@ -1,0 +1,7 @@
+# Face Recognition Systems Under Adversarial Attacks
+# Add/version as you implement (e.g. torch, insightface, adversarial libs)
+# numpy
+# torch
+# torchvision
+# insightface  # if using Option I
+# adversarial-library  # e.g. foolbox, advertorch, or custom
