@@ -43,20 +43,12 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 
 ---
 
-## Architecture Options
 
-| Option | Approach | Details |
-|--------|----------|---------|
-| **I** | Feature extractor | ArcFace [4] embedding model via InsightFace; design verification logic, attacks, and adversarial training |
-| **II** | Train from scratch | CNN (e.g. ResNet-18 [5]) for laptop-scale training; same focus on verification, attacks, and adversarial training |
+## Adversarial Attacks
 
----
-
-## Adversarial Attacks (Planned)
-
-- **Setting:** Digital adversarial example attacks [6]. Evaluate using **impersonation (FAR)** and **dodging (FRR)** under verification.
-- **White-box:** PGD (Projected Gradient Descent), C&W (Carlini–Wagner).
-- **Black-box:** Transfer attack (craft on surrogate model, test on target).
+- **C&W** (Carlini–Wagner) — implemented
+- **One Pixel** — implemented
+- **PGD** (Projected Gradient Descent) — planned
 
 ---
 
@@ -64,25 +56,27 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 
 ### Mid-Semester Report: **Mar 8, 11:59pm**
 - [ ] Submit mid-semester report
-- **Target for report:** Tasks 1–2 complete; baseline pipeline and clean benchmark (FAR, FRR, EER) done. Optionally include progress on Task 3 (attacks). Plan the rest of the semester (Tasks 3–4) in the report.
+- **Target for report:** Tasks 1–3 complete; baseline pipeline, clean benchmark (FAR, FRR, EER), and attack implementations (PGD, One Pixel, C&W) done. Plan the rest of the semester (Task 4) in the report.
 
 ---
 
 ### Task 1: Baseline Verification Pipeline  
 **Deadline:** _[Before mid-semester report, e.g., Feb 28]_  
-**Owner:** _[Assign]_
+**Owner:** Luqi Sun, Xiutian Zhao
 
-- [ ] Implement initial Face ID verification system (Option I or II)
+- [x] Implement ArcFace (InsightFace) baseline model
+- [x] Implement initial Face ID verification system
 - [ ] Calibrate verification thresholds
-- [ ] Document pipeline (config, scripts, usage)
+- [x] Document pipeline (config, scripts, usage)
+- [x] Update README with model details once finalized
 
 ---
 
 ### Task 2: Clean Benchmark Performance  
 **Deadline:** _[Before mid-semester report, e.g., March 8]_  
-**Owner:** _[Assign]_
+**Owner:** Luqi Sun, Xiutian Zhao
 
-- [ ] Generate verification pairs from held-out split
+- [ ] Define verification pairs from held-out split (consistent with baseline model)
 - [ ] Calibrate decision threshold on validation set
 - [ ] Report **FAR**, **FRR**, **EER** on clean data
 - [ ] Save benchmarks and plots for comparison
@@ -90,24 +84,25 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 ---
 
 ### Task 3: Adversarial Attacks & Metrics  
-**Deadline:** _[Update: e.g., Week 7 / Mar 22]_  
-**Owner:** _[Assign]_ (can split: one person PGD, one CW, one transfer)
+**Deadline:** _[Before mid-semester report, Mar 8]_  
+**Owners:** PGD (YiChiao Wang), One Pixel (Maria Teresa Franco), C&W (MaKhaila Bentil)
 
-- [ ] Implement **PGD** (white-box)
-- [ ] Implement **C&W** (white-box)
-- [ ] Implement **transfer attack** (black-box)
+- [x] Document baseline model interface (embedding API) for attack integration
+- [ ] Implement **PGD**
+- [x] Implement **One Pixel**
+- [x] Implement **C&W**
 - [ ] Report attack success rates per attack
-- [ ] Report robust verification metrics (FAR/FRR under attack)
+- [ ] Report robust verification metrics under attack
 
 ---
 
 ### Task 4: Adversarial Training & Re-evaluation  
 **Deadline:** _[Update: e.g., Week 9 / Apr 5]_  
-**Owner:** _[Assign]_
+**Owner:** _[Assign; after Tasks 1–3]_
 
 - [ ] Implement adversarial training (e.g. PGD-based)
-- [ ] Re-evaluate on **clean** metrics (FAR, FRR, EER)
-- [ ] Re-evaluate on **robust** metrics under same attacks
+- [ ] Re-evaluate on clean metrics (FAR, FRR, EER)
+- [ ] Re-evaluate on robust metrics under PGD, One Pixel, C&W
 - [ ] Compare baseline vs adversarially trained model; document findings
 
 ---
@@ -119,19 +114,25 @@ aibs_project/
 ├── README.md              # This file
 ├── docs/
 │   └── DATASET.md         # How to get the dataset and run the setup script
+├── opa/                   # One Pixel Attack (run_opa.py, opa.py, utils.py)
 ├── scripts/
 │   ├── get_dataset.py     # Download/set up CASIA-WebFace (data/casia_webface/, data/eval/)
-│   └── extract_rec_to_folders.py   # Optional: unpack train.rec to folder-per-identity .jpg (data/casia_webface_extracted/)
-├── data/                  # casia_webface/, eval/; optional casia_webface_extracted/ (gitignored)
+│   ├── extract_rec_to_folders.py   # Optional: unpack train.rec to folder-per-identity .jpg (data/casia_webface_extracted/)
+│   ├── arcface_eval_bin.py        # Evaluate ArcFace on .bin verification pairs (LFW, AgeDB, etc.)
+│   └── run_cw_attack.py           # Run C&W attack on ArcFace with CASIA face images
 ├── src/                   # Code: verification, attacks, training
-├── experiments/           # Scripts and configs for runs
+├── tests/                 # Unit tests (e.g. test_carlini_wagner.py)
+├── data/                  # casia_webface/, eval/; optional casia_webface_extracted/ (gitignored)
+├── opa_images/            # Output from One Pixel attack
 ├── results/               # Logs, metrics, figures
-└── requirements.txt       # Python dependencies (add as you go)
+└── requirements.txt       # Python dependencies
 ```
 
 ---
 
 ## References
+
+### Face recognition & architecture
 
 [1] M. Jha, A. Tiwari, M. Himansh, and V. M. Manikandan, "Face recognition: recent advancements and research challenges," in 2022 13th International Conference on Computing Communication and Networking Technologies (ICCCNT). IEEE, 2022, pp. 1–6.
 
@@ -143,12 +144,46 @@ aibs_project/
 
 [5] K. He, X. Zhang, S. Ren, and J. Sun, "Deep residual learning for image recognition," in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 2016, pp. 770–778.
 
-[6] I. J. Goodfellow, J. Shlens, and C. Szegedy, "Explaining and harnessing adversarial examples," in International Conference on Learning Representations (ICLR), 2015.
+[6] Y. Taigman, M. Yang, M. Ranzato, and L. Wolf, "DeepFace: Closing the gap to human-level performance in face verification," in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 2014.
+
+[7] F. Schroff, D. Kalenichenko, and J. Philbin, "FaceNet: A unified embedding for face recognition and clustering," in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 2015.
+
+[8] C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens, and Z. Wojna, "Rethinking the inception architecture for computer vision," in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 2016.
+
+### Adversarial attacks & robustness
+
+[9] I. J. Goodfellow, J. Shlens, and C. Szegedy, "Explaining and harnessing adversarial examples," in International Conference on Learning Representations (ICLR), 2015.
+
+[10] I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley, S. Ozair, A. Courville, and Y. Bengio, "Generative adversarial nets," in Advances in Neural Information Processing Systems (NeurIPS), 2014.
+
+[11] A. Kurakin, I. Goodfellow, and S. Bengio, "Adversarial examples in the physical world," in ICLR Workshop, 2017.
+
+[12] N. Carlini and D. Wagner, "Adversarial examples are not easily detected: Bypassing ten detection methods," in Proceedings of the 10th ACM Workshop on Artificial Intelligence and Security (AISEC), 2017.
+
+[13] N. Carlini and D. Wagner, "Obfuscated gradients give a false sense of security: Circumventing defenses to adversarial examples," in International Conference on Machine Learning (ICML), 2018.
+
+[14] J. Cohen, E. Rosenfeld, and Z. Kolter, "Certified adversarial robustness via randomized smoothing," in International Conference on Machine Learning (ICML), 2019.
+
+[15] J. Gilmer, L. Metz, F. R. Schroff, I. Goodfellow, D. Sussillo, and J. Snoek, "Perceptual adversarial examples," in International Conference on Learning Representations (ICLR), 2019.
+
+[16] Z. Li, B. Li, J. Bi, X. Jia, Z. Liu, and J. Yan, "Attack that network: A two-stage adversarial attack against deep face recognition," in IEEE Transactions on Information Forensics and Security, 2020.
+
+### Adversarial attack references (Medium)
+
+[17] A. G. Zachariah, "Adversarial attacks with Carlini & Wagner approach," Medium, 2023. https://medium.com/@zachariaharungeorge/adversarial-attacks-with-carlini-wagner-approach-8307daa9a503
+
+[18] A. G. Zachariah, "Unveiling the power of projected gradient descent in adversarial attacks," Medium, 2023. https://medium.com/@zachariaharungeorge/unveiling-the-power-of-projected-gradient-descent-in-adversarial-attacks-2f92509dde3c
+
+[19] "One pixel attack: Breaking deep learning models with minimal perturbation," Medium, 2019. https://hiya31.medium.com/one-pixel-attack-breaking-deep-learning-models-with-minimal-perturbation-766d8df397e8
 
 ---
 
 ## Getting Started
 
 1. Clone the repo, then run the dataset script (see **Workspace setup** above or [docs/DATASET.md](docs/DATASET.md)).
-2. Pick architecture (Option I or II) and implement the baseline (Task 1).
-3. Use the checklist above to assign tasks and set deadlines; update this README as you go.
+2. Extract folder-per-identity images (for C&W attack): `python scripts/extract_rec_to_folders.py --limit 100`
+3. Run tests: `pytest tests/` (some tests require extracted data)
+4. Run C&W attack: `python scripts/run_cw_attack.py --data data/casia_webface_extracted`  
+   (Requires ArcFace model w600k_r50.onnx; run `arcface_eval_bin.py` once with FaceAnalysis to download.)
+5. Run One Pixel attack: `python -m opa.run_opa` (uses data/casia_webface_extracted and outputs to opa_images/)
+6. Use the checklist above to assign tasks and set deadlines; update this README as you go.

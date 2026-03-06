@@ -219,7 +219,10 @@ def main(bin_path: str, use_gpu: bool = True, det_size: int = 640, rec_only: boo
         k = min(int(_MAX_PAIRS), n_pairs)
         rng = np.random.default_rng(int(_SEED))
 
-        if _BALANCED:
+        # Default to balanced when limiting pairs (avoids single-class subsets from LFW's grouped layout)
+        use_balanced = _BALANCED or (not _SAMPLE)
+
+        if use_balanced:
             # Balanced sampling to ensure both classes exist (LFW bins are often grouped by class)
             pos_idx = np.where(labels == 1)[0]
             neg_idx = np.where(labels == 0)[0]
