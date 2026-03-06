@@ -5,7 +5,7 @@ from pathlib import Path
 import torch.nn.functional as F
 import numpy as np
 from insightface.model_zoo import get_model
-from opa import OnePixelAttack
+from opa.opa import OnePixelAttack
 import os
 
 

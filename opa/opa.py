@@ -243,7 +243,7 @@ class OnePixelAttack:
         self.perturbed_img = self._apply_perturbations(self.img, perturbations)
 
         if show:
-            from utils import visualize_perturbations
+            from opa.utils import visualize_perturbations
             visualize_perturbations(
                 self.perturbed_img, self.img, self.model, **kwargs_visualize
             )
