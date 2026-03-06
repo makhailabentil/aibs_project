@@ -8,13 +8,6 @@ from typing import List
 class OnePixelAttack:
     """
     Optimized One Pixel Attack (OPA) using differential evolution.
-
-    Key improvements over baseline:
-    - Vectorized pixel application (no Python loops per perturbation)
-    - Continuous RGB values instead of binarized (more effective, subtler)
-    - Adaptive F scaling with per-individual jitter
-    - Early stopping when cosine similarity drops below threshold
-    - Cached base image tensor to avoid repeated cloning
     """
 
     def __init__(
@@ -60,9 +53,6 @@ class OnePixelAttack:
         self.population = torch.rand(n, 5)
         self.fitness = self._evaluate_population_bulk(self.population, [])
 
-    # ------------------------------------------------------------------
-    # Image perturbation (vectorized)
-    # ------------------------------------------------------------------
 
     def _apply_perturbations(
         self, base: torch.Tensor, perturbations: List[torch.Tensor]
@@ -87,10 +77,6 @@ class OnePixelAttack:
             p_img[1, yi, xi] = g
             p_img[2, yi, xi] = b
         return p_img
-
-    # ------------------------------------------------------------------
-    # Fitness
-    # ------------------------------------------------------------------
 
     def _fitness(self, perturbed_img: torch.Tensor) -> float:
         """
@@ -119,11 +105,7 @@ class OnePixelAttack:
             p_img = self._apply_perturbations(self.img, perturbs)
             fitness[i, 0] = self._fitness(p_img)
         return fitness
-
-    # ------------------------------------------------------------------
-    # Differential Evolution with crossover
-    # ------------------------------------------------------------------
-
+    
     def _evolve(
         self,
         fixed_perturbations: List[torch.Tensor],
@@ -168,9 +150,6 @@ class OnePixelAttack:
             if print_every is not None and epoch % print_every == 0:
                 print(f"  Epoch {epoch:3d} | best fitness: {best:.4f}")
 
-    # ------------------------------------------------------------------
-    # Main search
-    # ------------------------------------------------------------------
 
     def _get_perturbations(
         self,
@@ -243,7 +222,7 @@ class OnePixelAttack:
         self.perturbed_img = self._apply_perturbations(self.img, perturbations)
 
         if show:
-            from opa.utils import visualize_perturbations
+            from attacks.utils import visualize_perturbations
             visualize_perturbations(
                 self.perturbed_img, self.img, self.model, **kwargs_visualize
             )

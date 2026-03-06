@@ -26,7 +26,7 @@ def visualize_perturbations(
     Visualizes original vs adversarial image and reports cosine similarity.
     """
 
-    os.makedirs("images", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
     with torch.no_grad():
         emb_orig = model(img.unsqueeze(0))
