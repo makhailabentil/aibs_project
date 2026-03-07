@@ -56,3 +56,12 @@ Thumbs.db
 *.ckpt
 *.h5
 *.onnx
+
+# Model weights — never commit large binaries
+models/*.onnx
+models/*.pt
+models/*.pth
+models/*.bin
+
+# Keep the folder itself so the path exists after cloning
+!models/.gitkeep
