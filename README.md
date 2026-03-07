@@ -48,7 +48,7 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 
 - **C&W** (Carlini–Wagner) — implemented
 - **One Pixel** — implemented
-- **PGD** (Projected Gradient Descent) — planned
+- **PGD** (Projected Gradient Descent) — implemented
 
 ---
 
@@ -88,7 +88,7 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 **Owners:** PGD (YiChiao Wang), One Pixel (Maria Teresa Franco), C&W (MaKhaila Bentil)
 
 - [x] Document baseline model interface (embedding API) for attack integration
-- [ ] Implement **PGD**
+- [x] Implement **PGD**
 - [x] Implement **One Pixel**
 - [x] Implement **C&W**
 - [ ] Report attack success rates per attack
@@ -119,7 +119,8 @@ aibs_project/
 │   ├── get_dataset.py     # Download/set up CASIA-WebFace (data/casia_webface/, data/eval/)
 │   ├── extract_rec_to_folders.py   # Optional: unpack train.rec to folder-per-identity .jpg (data/casia_webface_extracted/)
 │   ├── arcface_eval_bin.py        # Evaluate ArcFace on .bin verification pairs (LFW, AgeDB, etc.)
-│   └── run_cw_attack.py           # Run C&W attack on ArcFace with CASIA face images
+│   ├── run_cw_attack.py           # Run C&W attack on ArcFace with CASIA face images
+|   └── run_pgd_attack.py          # Run PGD attack on ArcFace with CASIA face images
 ├── src/                   # Code: verification, attacks, training
 ├── tests/                 # Unit tests (e.g. test_carlini_wagner.py)
 ├── data/                  # casia_webface/, eval/; optional casia_webface_extracted/ (gitignored)
