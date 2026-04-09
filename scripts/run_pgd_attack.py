@@ -24,7 +24,8 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.utils import save_image
 
-from src.attacks import PGDAttack, AttackMode
+from src.attacks import AttackMode
+from src.attacks.pgd import PGDAttack
 
 
 def _log(msg: str) -> None:
