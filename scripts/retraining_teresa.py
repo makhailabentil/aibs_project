@@ -1,682 +1,276 @@
 #!/usr/bin/env python3
-"""Adversarial training to make ArcFace robust against PGD attacks.
+"""
+Adversarial Fine-Tuning for Face Verification (Lab Project Version)
+====================================================================
+Goal: Fine-tune the ArcFace backbone so it becomes harder to fool with PGD.
 
-This implements AT-FaceNet-style adversarial training where, on each mini-batch,
-a fraction of images are replaced with their PGD adversarial counterparts before
-the standard ArcFace / CosFace classification loss is computed.
+Strategy (kept simple on purpose):
+  - Load pairs of same-identity images from your dataset.
+  - For each pair, generate a PGD-adversarial version of image A.
+  - Train the backbone so the adversarial embedding stays close to the
+    clean embedding of image B (contrastive "stay together" loss).
+  - No classification head needed — we work directly in embedding space.
+
+This runs fine on a MacBook (MPS or CPU). One epoch over 200 pairs takes
+roughly 5–10 minutes on MPS, 15–20 min on CPU.
 
 Usage:
-  # Fine-tune the existing ONNX/PyTorch backbone:
-  python scripts/train_adversarial.py --data data/casia_webface_extracted
-
-  # Full training run with custom settings:
-  python scripts/retraining_teresa.py \
-      --data data/casia_webface_extracted \
-      --epochs 20 \
-      --adv_fraction 0.3 \
-      --eps 8 \
-      --pgd_steps 5 \
-      --lr 1e-4 \
-      --save_every 5
+  python scripts/retraining_teresa.py --data data/casia_webface_extracted
+  python scripts/retraining_teresa.py --data data/casia_webface_extracted \
+      --epochs 3 --num_pairs 150 --eps 8 --pgd_steps 5 --batch_size 8
 """
-
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
-import json
-import random
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from torchvision.utils import save_image
 from PIL import Image
 
-from src.attacks import PGDAttack, AttackMode
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.models import load_arcface_model
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _log(msg: str) -> None:
-    print(msg, flush=True)
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
-class FaceDataset(Dataset):
-    """Folder-per-identity face image dataset.
-
-    Structure expected:
-        root/
-            identity_001/
-                img1.jpg
-                img2.jpg
-            identity_002/
-                ...
-    """
-
-    EXTS = {".jpg", ".jpeg", ".png"}
-
-    def __init__(self, root: Path, size: int = 112):
-        self.root = root
-        self.size = size
+class CasiaFolderDataset(Dataset):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        image_size: int = 112,
+        max_classes: int | None = None,
+        max_imgs_per_class: int | None = None,
+    ):
+        self.data_dir = Path(data_dir)
         self.transform = transforms.Compose([
-            transforms.Resize((size, size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+            transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
         ])
+
+        class_dirs = sorted([d for d in self.data_dir.iterdir() if d.is_dir()])
+        if max_classes is not None:
+            class_dirs = class_dirs[:max_classes]
+
+        self.class_to_idx = {d.name: i for i, d in enumerate(class_dirs)}
         self.samples: list[tuple[Path, int]] = []
-        self.class_names: list[str] = []
-        self._build_index()
 
-    def _build_index(self) -> None:
-        identity_dirs = sorted(
-            d for d in self.root.iterdir()
-            if d.is_dir()
-        )
-        for label, ident_dir in enumerate(identity_dirs):
-            self.class_names.append(ident_dir.name)
-            for img_path in ident_dir.iterdir():
-                if img_path.suffix.lower() in self.EXTS:
-                    self.samples.append((img_path, label))
+        for d in class_dirs:
+            imgs = sorted(list(d.glob("*.jpg")) + list(d.glob("*.jpeg")) + list(d.glob("*.png")))
+            if max_imgs_per_class is not None:
+                imgs = imgs[:max_imgs_per_class]
+            for img_path in imgs:
+                self.samples.append((img_path, self.class_to_idx[d.name]))
 
-    @property
-    def num_classes(self) -> int:
-        return len(self.class_names)
-
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx: int):
-        path, label = self.samples[idx]
-        img = Image.open(path).convert("RGB")
-        return self.transform(img), label
+    def __getitem__(self, idx):
+        img_path, label = self.samples[idx]
+        img = Image.open(img_path).convert("RGB")
+        x = self.transform(img)
+        y = torch.tensor(label, dtype=torch.long)
+        return x, y
 
 
-# ---------------------------------------------------------------------------
-# ArcFace / CosFace classification head
-# ---------------------------------------------------------------------------
-
-class ArcFaceHead(nn.Module):
-    """Additive Angular Margin (ArcFace) classification head.
-
-    Args:
-        in_features: Embedding dimension (e.g. 512).
-        num_classes: Number of identities.
-        s: Feature scale (logit scale). Default 64.
-        m: Additive angular margin in radians. Default 0.5.
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        num_classes: int,
-        s: float = 64.0,
-        m: float = 0.5,
-    ):
+class ArcFaceClassifier(nn.Module):
+    def __init__(self, backbone: nn.Module, num_classes: int):
         super().__init__()
-        self.s = s
-        self.m = m
-        self.weight = nn.Parameter(torch.FloatTensor(num_classes, in_features))
-        nn.init.xavier_uniform_(self.weight)
+        self.backbone = backbone
+        self.classifier = nn.Linear(512, num_classes)
 
-        import math
-        self.cos_m = math.cos(m)
-        self.sin_m = math.sin(m)
-        self.th = math.cos(math.pi - m)
-        self.mm = math.sin(math.pi - m) * m
-
-    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        embeddings = F.normalize(embeddings, p=2, dim=1)
-        weight_norm = F.normalize(self.weight, p=2, dim=1)
-        cosine = F.linear(embeddings, weight_norm)           # (B, C)
-        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
-        phi = cosine * self.cos_m - sine * self.sin_m        # cos(θ + m)
-        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
-        one_hot = torch.zeros_like(cosine)
-        one_hot.scatter_(1, labels.view(-1, 1), 1.0)
-        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
-        return output * self.s
+    def forward(self, x):
+        emb = self.backbone(x)              # [B, 512]
+        emb = F.normalize(emb, p=2, dim=1) # same style as verification
+        logits = self.classifier(emb)
+        return logits, emb
 
 
-# ---------------------------------------------------------------------------
-# PGD attack used *during* training (fast inner loop)
-# ---------------------------------------------------------------------------
-
-class TrainingPGD:
-    """Lightweight PGD wrapper optimised for training speed.
-
-    Uses a fixed 7-step PGD (TRADES-style) with random start.
-    Operates in *no_grad* except for the loss gradient w.r.t. x.
+def pgd_attack_for_training(
+    model: nn.Module,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    eps: float = 4 / 255,
+    alpha: float = 1 / 255,
+    steps: int = 3,
+):
     """
+    PGD for adversarial training using CE loss.
+    This is different from your existing verification-style PGD attack.
+    """
+    was_training = model.training
+    model.eval()
 
-    def __init__(
-        self,
-        model: nn.Module,
-        head: ArcFaceHead,
-        eps: float,
-        alpha: float,
-        steps: int,
-        norm: str = "Linf",
-    ):
-        self.model = model
-        self.head = head
-        self.eps = eps
-        self.alpha = alpha
-        self.steps = steps
-        self.norm = norm
+    x_orig = x.detach()
+    x_adv = x_orig.clone()
 
-    @torch.enable_grad()
-    def perturb(
-        self,
-        x: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return adversarial examples that maximise cross-entropy loss."""
-        x = x.detach()
+    # random start
+    x_adv = x_adv + torch.empty_like(x_adv).uniform_(-eps, eps)
+    x_adv = torch.clamp(x_adv, 0.0, 1.0)
 
-        # Random initialisation within epsilon ball
-        if self.norm == "Linf":
-            delta = torch.empty_like(x).uniform_(-self.eps, self.eps)
-        else:
-            delta = torch.zeros_like(x)
-            delta.normal_()
-            delta = delta * self.eps / (delta.view(len(x), -1).norm(p=2, dim=1).view(-1, 1, 1, 1) + 1e-12)
+    for _ in range(steps):
+        x_adv.requires_grad_(True)
 
-        delta = delta.clamp(-self.eps, self.eps)
-        x_adv = (x + delta).clamp(0, 1)
+        logits_adv, _ = model(x_adv)
+        loss = F.cross_entropy(logits_adv, y)
 
-        for _ in range(self.steps):
-            x_adv = x_adv.detach().requires_grad_(True)
-            emb = self.model(x_adv)
-            logits = self.head(emb, labels)
-            loss = F.cross_entropy(logits, labels)
-            grad = torch.autograd.grad(loss, x_adv)[0]
+        grad = torch.autograd.grad(loss, x_adv, only_inputs=True)[0]
 
-            with torch.no_grad():
-                if self.norm == "Linf":
-                    x_adv = x_adv + self.alpha * grad.sign()
-                    delta = (x_adv - x).clamp(-self.eps, self.eps)
-                    x_adv = (x + delta).clamp(0, 1)
-                else:  # L2
-                    grad_norm = grad.view(len(x), -1).norm(p=2, dim=1).view(-1, 1, 1, 1) + 1e-12
-                    x_adv = x_adv + self.alpha * grad / grad_norm
-                    delta = x_adv - x
-                    delta_norm = delta.view(len(x), -1).norm(p=2, dim=1).view(-1, 1, 1, 1) + 1e-12
-                    delta = delta * torch.min(
-                        torch.ones_like(delta_norm),
-                        self.eps / delta_norm,
-                    )
-                    x_adv = (x + delta).clamp(0, 1)
+        with torch.no_grad():
+            x_adv = x_adv + alpha * grad.sign()
+            delta = torch.clamp(x_adv - x_orig, min=-eps, max=eps)
+            x_adv = torch.clamp(x_orig + delta, 0.0, 1.0)
 
-        return x_adv.detach()
+    if was_training:
+        model.train()
+
+    return x_adv.detach()
 
 
-# ---------------------------------------------------------------------------
-# Training utilities
-# ---------------------------------------------------------------------------
-
-def _build_optimizer(
-    backbone: nn.Module,
-    head: ArcFaceHead,
-    lr: float,
-    weight_decay: float,
-) -> torch.optim.Optimizer:
-    params = [
-        {"params": backbone.parameters(), "lr": lr},
-        {"params": head.parameters(), "lr": lr * 10},  # head learns faster
-    ]
-    return torch.optim.SGD(params, momentum=0.9, weight_decay=weight_decay)
-
-
-def _cosine_schedule(
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    total_epochs: int,
-    warmup_epochs: int = 2,
-) -> None:
-    """In-place LR update with linear warmup + cosine decay."""
-    import math
-    for pg in optimizer.param_groups:
-        base_lr = pg.get("initial_lr", pg["lr"])
-        if epoch < warmup_epochs:
-            scale = (epoch + 1) / warmup_epochs
-        else:
-            progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
-            scale = 0.5 * (1 + math.cos(math.pi * progress))
-        pg["lr"] = base_lr * scale
-
-
-# ---------------------------------------------------------------------------
-# Main training loop
-# ---------------------------------------------------------------------------
-
-def train_one_epoch(
-    backbone: nn.Module,
-    head: ArcFaceHead,
-    pgd: TrainingPGD,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    adv_fraction: float,
-    epoch: int,
-) -> dict:
-    backbone.train()
-    head.train()
-
+def train_one_epoch(model, loader, optimizer, device, eps, alpha, steps, adv_weight):
+    model.train()
     total_loss = 0.0
-    clean_correct = 0
-    adv_correct = 0
-    total_samples = 0
 
-    for batch_idx, (x, labels) in enumerate(loader):
-        x, labels = x.to(device), labels.to(device)
-        B = len(x)
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
 
-        # ---- Build mixed batch (clean + adversarial) ----------------------
-        num_adv = max(1, int(B * adv_fraction))
-        adv_indices = torch.randperm(B, device=device)[:num_adv]
-
-        # Generate adversarial examples for selected indices
-        x_adv_partial = pgd.perturb(x[adv_indices], labels[adv_indices])
-
-        x_mixed = x.clone()
-        x_mixed[adv_indices] = x_adv_partial
-
-        # ---- Forward (mixed batch) ----------------------------------------
-        optimizer.zero_grad()
-        emb_mixed = backbone(x_mixed)
-        logits_mixed = head(emb_mixed, labels)
-        loss = F.cross_entropy(logits_mixed, labels)
-
-        # ---- Backward --------------------------------------------------------
-        loss.backward()
-        nn.utils.clip_grad_norm_(
-            list(backbone.parameters()) + list(head.parameters()), max_norm=5.0
+        x_adv = pgd_attack_for_training(
+            model=model,
+            x=x,
+            y=y,
+            eps=eps,
+            alpha=alpha,
+            steps=steps,
         )
+
+        logits_clean, _ = model(x)
+        logits_adv, _ = model(x_adv)
+
+        loss_clean = F.cross_entropy(logits_clean, y)
+        loss_adv = F.cross_entropy(logits_adv, y)
+        loss = (1.0 - adv_weight) * loss_clean + adv_weight * loss_adv
+
+        optimizer.zero_grad()
+        loss.backward()
         optimizer.step()
 
-        # ---- Metrics (clean accuracy on full batch) -----------------------
-        with torch.no_grad():
-            emb_clean = backbone(x)
-            logits_clean = head(emb_clean, labels)
-            clean_pred = logits_clean.argmax(dim=1)
-            clean_correct += (clean_pred == labels).sum().item()
+        total_loss += loss.item()
 
-            # Adv accuracy on the adversarial subset
-            emb_adv = backbone(x_adv_partial)
-            logits_adv = head(emb_adv, labels[adv_indices])
-            adv_pred = logits_adv.argmax(dim=1)
-            adv_correct += (adv_pred == labels[adv_indices]).sum().item()
-
-        total_loss += loss.item() * B
-        total_samples += B
-
-        if (batch_idx + 1) % 20 == 0:
-            _log(
-                f"  [Epoch {epoch}] step {batch_idx+1}/{len(loader)} "
-                f"loss={loss.item():.4f} "
-                f"clean_acc={clean_correct/total_samples*100:.1f}% "
-                f"adv_acc_partial={adv_correct/total_samples*100:.1f}%"
-            )
-
-    return {
-        "loss": total_loss / total_samples,
-        "clean_acc": clean_correct / total_samples,
-        "adv_acc": adv_correct / total_samples,
-    }
+    return total_loss / max(1, len(loader))
 
 
 @torch.no_grad()
-def evaluate(
-    backbone: nn.Module,
-    eval_pairs: list[dict],
-    threshold: float,
-    device: torch.device,
-    pgd_eval: Optional[PGDAttack] = None,
-) -> dict:
-    """Evaluate verification performance on held-out pairs.
+def quick_train_acc(model, loader, device, max_batches: int = 20):
+    model.eval()
+    total = 0
+    correct = 0
 
-    Returns clean TAR@FAR, adversarial TAR@FAR (if pgd_eval provided),
-    and ASR (Attack Success Rate under adversarial conditions).
-    """
-    backbone.eval()
+    for i, (x, y) in enumerate(loader):
+        if i >= max_batches:
+            break
+        x = x.to(device)
+        y = y.to(device)
 
-    clean_correct = 0
-    adv_correct = 0  # correct means attack FAILED to fool the model
-    n_eligible_attack = 0
+        logits, _ = model(x)
+        pred = logits.argmax(dim=1)
 
-    for pair in eval_pairs:
-        x1 = pair["img1"].to(device)
-        x2 = pair["img2"].to(device)
-        same = pair["same"]
+        total += y.numel()
+        correct += (pred == y).sum().item()
 
-        e1 = F.normalize(backbone(x1), p=2, dim=1)
-        e2 = F.normalize(backbone(x2), p=2, dim=1)
-        sim = (e1 * e2).sum(dim=1).item()
-        pred_same = sim >= threshold
-
-        if pred_same == same:
-            clean_correct += 1
-
-        # Adversarial evaluation: try to fool the model on the *source* image
-        if pgd_eval is not None:
-            if same:
-                # Dodging: try to push sim below threshold
-                eligible = sim >= threshold
-                if eligible:
-                    n_eligible_attack += 1
-                    x1_adv = pgd_eval(x1, source_embedding=e2, mode=AttackMode.DODGING)
-                    e1_adv = F.normalize(backbone(x1_adv), p=2, dim=1)
-                    adv_sim = (e1_adv * e2).sum(dim=1).item()
-                    if adv_sim >= threshold:  # attack failed → correct
-                        adv_correct += 1
-            else:
-                # Impersonation: try to push sim above threshold
-                eligible = sim < threshold
-                if eligible:
-                    n_eligible_attack += 1
-                    x1_adv = pgd_eval(x1, target_embedding=e2, source_embedding=e1, mode=AttackMode.IMPERSONATION)
-                    e1_adv = F.normalize(backbone(x1_adv), p=2, dim=1)
-                    adv_sim = (e1_adv * e2).sum(dim=1).item()
-                    if adv_sim < threshold:  # attack failed → correct
-                        adv_correct += 1
-
-    n = len(eval_pairs)
-    result = {
-        "clean_acc": clean_correct / n if n > 0 else 0.0,
-        "adv_robust_acc": adv_correct / n_eligible_attack if n_eligible_attack > 0 else None,
-        "asr": 1.0 - adv_correct / n_eligible_attack if n_eligible_attack > 0 else None,
-        "n_pairs": n,
-        "n_eligible_attack": n_eligible_attack,
-    }
-    return result
+    return correct / max(1, total)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Adversarial training for ArcFace robustness")
-
-    # Data
-    parser.add_argument("--data", type=str, required=True, help="Path to casia_webface_extracted")
-    parser.add_argument("--size", type=int, default=112, help="Input image size")
-    parser.add_argument("--val_split", type=float, default=0.05, help="Fraction of identities held out for eval")
-
-    # Training
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch_size", type=int, default=64)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", type=str, required=True, help="Path to data/casia_webface_extracted")
+    parser.add_argument("--onnx", type=str, default=None, help="Path to w600k_r50.onnx")
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight_decay", type=float, default=5e-4)
-    parser.add_argument("--adv_fraction", type=float, default=0.5,
-                        help="Fraction of each mini-batch that is adversarial (0=standard, 1=full AT)")
-
-    # Inner PGD (training)
-    parser.add_argument("--pgd_steps", type=int, default=7, help="PGD steps during training (fast, keep ≤10)")
-    parser.add_argument("--eps", type=float, default=8.0, help="Max perturbation in [0,255] scale")
-    parser.add_argument("--alpha_train", type=float, default=None,
-                        help="PGD step size during training. Defaults to 2*eps/steps")
-    parser.add_argument("--norm", choices=["Linf", "L2"], default="Linf")
-
-    # Evaluation PGD (stronger, used at end of each epoch)
-    parser.add_argument("--eval_pgd_steps", type=int, default=40, help="PGD steps for evaluation")
-    parser.add_argument("--num_eval_pairs", type=int, default=200, help="Number of pairs for epoch evaluation")
-
-    # ArcFace head
-    parser.add_argument("--emb_dim", type=int, default=512, help="Backbone embedding dimension")
-    parser.add_argument("--arc_s", type=float, default=64.0, help="ArcFace scale s")
-    parser.add_argument("--arc_m", type=float, default=0.5, help="ArcFace margin m")
-
-    # Model
-    parser.add_argument("--onnx", type=str, default=None, help="Path to w600k_r50.onnx (optional override)")
-    parser.add_argument("--threshold", type=float, default=0.1767, help="Verification threshold")
-
-    # Saving
-    parser.add_argument("--save_every", type=int, default=5, help="Save checkpoint every N epochs")
-    parser.add_argument("--output_dir", type=str, default="checkpoints", help="Directory for checkpoints")
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-
+    parser.add_argument("--image_size", type=int, default=112)
+    parser.add_argument("--eps", type=float, default=4/255)
+    parser.add_argument("--alpha", type=float, default=1/255)
+    parser.add_argument("--steps", type=int, default=3)
+    parser.add_argument("--adv_weight", type=float, default=0.5)
+    parser.add_argument("--max_classes", type=int, default=100)
+    parser.add_argument("--max_imgs_per_class", type=int, default=20)
+    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--save_name", type=str, default="arcface_pgd_adv_train.pt")
     args = parser.parse_args()
 
-    # ---- Setup ----------------------------------------------------------------
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _log(f"Device: {device}")
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    eps_norm = args.eps / 255.0
-    alpha_train = args.alpha_train / 255.0 if args.alpha_train else 2 * eps_norm / args.pgd_steps
+    dataset = CasiaFolderDataset(
+        data_dir=args.data,
+        image_size=args.image_size,
+        max_classes=args.max_classes,
+        max_imgs_per_class=args.max_imgs_per_class,
+    )
 
-    data_path = Path(args.data)
-    if not data_path.is_absolute():
-        data_path = (ROOT / data_path).resolve()
+    if len(dataset) == 0:
+        raise ValueError("Dataset is empty. Check --data path.")
 
-    output_dir = ROOT / args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Num classes: {len(dataset.class_to_idx)}")
+    print(f"Num samples: {len(dataset)}")
 
-    # ---- Load backbone --------------------------------------------------------
-    _log("Loading ArcFace backbone...")
-    try:
-        from src.models import load_arcface_model
-        backbone = load_arcface_model(onnx_path=args.onnx, device=device, input_bgr=False)
-    except FileNotFoundError as e:
-        _log(f"Model not found: {e}")
-        sys.exit(1)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
-    # ---- Dataset --------------------------------------------------------------
-    _log("Building dataset...")
-    full_dataset = FaceDataset(data_path, size=args.size)
-    num_classes = full_dataset.num_classes
-    _log(f"  {len(full_dataset)} images, {num_classes} identities")
+    backbone = load_arcface_model(
+        onnx_path=args.onnx,
+        device=device,
+        input_bgr=False,
+    )
 
-    # Split train/val by identity
-    num_val_ids = max(1, int(num_classes * args.val_split))
-    val_id_set = set(range(num_classes - num_val_ids, num_classes))
-    train_samples = [(p, l) for p, l in full_dataset.samples if l not in val_id_set]
-    val_samples   = [(p, l) for p, l in full_dataset.samples if l in val_id_set]
-
-    # Re-index validation labels to be contiguous (not strictly needed but tidy)
-    class FaceSubset(Dataset):
-        def __init__(self, samples, transform):
-            self.samples = samples
-            self.transform = transform
-        def __len__(self): return len(self.samples)
-        def __getitem__(self, i):
-            path, label = self.samples[i]
-            img = Image.open(path).convert("RGB")
-            return self.transform(img), label
-
-    train_ds = FaceSubset(train_samples, full_dataset.transform)
-    val_ds   = FaceSubset(val_samples, transforms.Compose([
-        transforms.Resize((args.size, args.size)),
-        transforms.ToTensor(),
-    ]))
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=4, pin_memory=True, drop_last=True)
-    _log(f"  Train: {len(train_ds)} samples | Val: {len(val_ds)} samples")
-
-    # ---- Classification head --------------------------------------------------
-    head = ArcFaceHead(
-        in_features=args.emb_dim,
-        num_classes=num_classes - num_val_ids,
-        s=args.arc_s,
-        m=args.arc_m,
+    model = ArcFaceClassifier(
+        backbone=backbone,
+        num_classes=len(dataset.class_to_idx),
     ).to(device)
 
-    # ---- Optimiser -----------------------------------------------------------
-    optimizer = _build_optimizer(backbone, head, args.lr, args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Store initial LRs for scheduler
-    for pg in optimizer.param_groups:
-        pg["initial_lr"] = pg["lr"]
+    for epoch in range(args.epochs):
+        avg_loss = train_one_epoch(
+            model=model,
+            loader=loader,
+            optimizer=optimizer,
+            device=device,
+            eps=args.eps,
+            alpha=args.alpha,
+            steps=args.steps,
+            adv_weight=args.adv_weight,
+        )
 
-    # ---- Inner attack (training) ---------------------------------------------
-    pgd_train = TrainingPGD(
-        backbone, head,
-        eps=eps_norm,
-        alpha=alpha_train,
-        steps=args.pgd_steps,
-        norm=args.norm,
+        acc = quick_train_acc(model, loader, device=device)
+        print(f"Epoch {epoch+1}/{args.epochs} | loss={avg_loss:.4f} | quick_train_acc={acc:.4f}")
+
+    out_dir = ROOT / "models"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = out_dir / args.save_name
+    torch.save(
+        {
+            "backbone_state_dict": model.backbone.state_dict(),
+            "classifier_state_dict": model.classifier.state_dict(),
+            "class_to_idx": dataset.class_to_idx,
+            "args": vars(args),
+        },
+        save_path,
     )
 
-    # ---- Eval attack (stronger, for post-epoch evaluation) -------------------
-    pgd_eval = PGDAttack(
-        backbone,
-        device=device,
-        eps=eps_norm,
-        alpha=2 * eps_norm / args.eval_pgd_steps,
-        steps=args.eval_pgd_steps,
-        norm=args.norm,
-        random_start=True,
-    )
-
-    # ---- Build evaluation pairs from val set --------------------------------
-    _log("Building evaluation pairs...")
-    eval_pairs = _build_eval_pairs(val_ds, args.num_eval_pairs, args.size, device)
-    _log(f"  {len(eval_pairs)} evaluation pairs built.")
-
-    # ---- Resume --------------------------------------------------------------
-    start_epoch = 1
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        backbone.load_state_dict(ckpt["backbone"])
-        head.load_state_dict(ckpt["head"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        start_epoch = ckpt["epoch"] + 1
-        _log(f"Resumed from epoch {ckpt['epoch']}: {args.resume}")
-
-    # ---- Training loop -------------------------------------------------------
-    history = []
-    _log(f"\n{'='*60}")
-    _log(f"Adversarial Training — ArcFace on {data_path.name}")
-    _log(f"epochs={args.epochs}, adv_fraction={args.adv_fraction}, "
-         f"eps={args.eps}/255, pgd_steps={args.pgd_steps}")
-    _log(f"{'='*60}\n")
-
-    for epoch in range(start_epoch, args.epochs + 1):
-        _cosine_schedule(optimizer, epoch - 1, args.epochs)
-        cur_lr = optimizer.param_groups[0]["lr"]
-        _log(f"\n[Epoch {epoch}/{args.epochs}] lr={cur_lr:.2e}")
-
-        train_stats = train_one_epoch(
-            backbone, head, pgd_train, train_loader,
-            optimizer, device, args.adv_fraction, epoch,
-        )
-
-        # Evaluate
-        eval_stats = evaluate(backbone, eval_pairs, args.threshold, device, pgd_eval)
-
-        _log(
-            f"  Train  loss={train_stats['loss']:.4f}  "
-            f"clean_acc={train_stats['clean_acc']*100:.1f}%  "
-            f"adv_acc={train_stats['adv_acc']*100:.1f}%"
-        )
-        _log(
-            f"  Eval   clean_acc={eval_stats['clean_acc']*100:.1f}%  "
-            + (f"robust_acc={eval_stats['adv_robust_acc']*100:.1f}%  "
-               f"ASR={eval_stats['asr']*100:.1f}%"
-               if eval_stats["adv_robust_acc"] is not None else "(no eligible attack pairs)")
-        )
-
-        record = {"epoch": epoch, **train_stats, **{f"eval_{k}": v for k, v in eval_stats.items()}}
-        history.append(record)
-
-        # Save checkpoint
-        if epoch % args.save_every == 0 or epoch == args.epochs:
-            ckpt_path = output_dir / f"arcface_adv_ep{epoch:03d}.pt"
-            torch.save({
-                "epoch": epoch,
-                "backbone": backbone.state_dict(),
-                "head": head.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "args": vars(args),
-                "history": history,
-            }, ckpt_path)
-            _log(f"  ✓ Checkpoint saved: {ckpt_path}")
-
-    # ---- Final evaluation ----------------------------------------------------
-    _log(f"\n{'='*60}")
-    _log("FINAL EVALUATION (strong PGD-40)")
-    _log(f"{'='*60}")
-    final = evaluate(backbone, eval_pairs, args.threshold, device, pgd_eval)
-    _log(f"  clean_acc={final['clean_acc']*100:.1f}%")
-    if final["adv_robust_acc"] is not None:
-        _log(f"  robust_acc={final['adv_robust_acc']*100:.1f}%  ASR={final['asr']*100:.1f}%")
-
-    # Save training log
-    log_path = output_dir / f"adv_training_log_{datetime.now():%Y%m%d_%H%M%S}.json"
-    with open(log_path, "w") as f:
-        json.dump({"args": vars(args), "history": history, "final": final}, f, indent=2)
-    _log(f"\nTraining log saved: {log_path}")
-
-
-# ---------------------------------------------------------------------------
-# Eval pair builder
-# ---------------------------------------------------------------------------
-
-def _build_eval_pairs(
-    val_ds,
-    num_pairs: int,
-    size: int,
-    device: torch.device,
-) -> list[dict]:
-    """Build genuine (same) and impostor (different) pairs from val dataset."""
-    from collections import defaultdict
-
-    by_label: dict[int, list] = defaultdict(list)
-    transform = transforms.Compose([
-        transforms.Resize((size, size)),
-        transforms.ToTensor(),
-    ])
-
-    # Collect samples per label
-    for path, label in val_ds.samples:
-        by_label[label].append(path)
-
-    labels = list(by_label.keys())
-    pairs = []
-    half = num_pairs // 2
-
-    # Genuine pairs (same identity)
-    for label in labels:
-        if len(pairs) >= half:
-            break
-        imgs = by_label[label]
-        if len(imgs) >= 2:
-            def load(p):
-                img = Image.open(p).convert("RGB")
-                return transform(img).unsqueeze(0).to(device)
-            pairs.append({"img1": load(imgs[0]), "img2": load(imgs[1]), "same": True})
-
-    # Impostor pairs (different identities)
-    random.shuffle(labels)
-    for i in range(len(labels) - 1):
-        if len(pairs) >= num_pairs:
-            break
-        imgs_a = by_label[labels[i]]
-        imgs_b = by_label[labels[i + 1]]
-        if imgs_a and imgs_b:
-            def load(p):
-                img = Image.open(p).convert("RGB")
-                return transform(img).unsqueeze(0).to(device)
-            pairs.append({"img1": load(imgs_a[0]), "img2": load(imgs_b[0]), "same": False})
-
-    return pairs
+    print(f"Saved checkpoint to: {save_path}")
 
 
 if __name__ == "__main__":
