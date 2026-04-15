@@ -48,7 +48,7 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 
 - **C&W** (Carlini–Wagner) — implemented
 - **One Pixel** — implemented
-- **PGD** (Projected Gradient Descent) — planned
+- **PGD** (Projected Gradient Descent) — implemented
 
 ---
 
@@ -88,7 +88,7 @@ To save disk space when downloading, add `--symlink` to the get_dataset command.
 **Owners:** PGD (YiChiao Wang), One Pixel (Maria Teresa Franco), C&W (MaKhaila Bentil)
 
 - [x] Document baseline model interface (embedding API) for attack integration
-- [ ] Implement **PGD**
+- [x] Implement **PGD**
 - [x] Implement **One Pixel**
 - [x] Implement **C&W**
 - [ ] Report attack success rates per attack
@@ -114,16 +114,16 @@ aibs_project/
 ├── README.md              # This file
 ├── docs/
 │   └── DATASET.md         # How to get the dataset and run the setup script
-├── opa/                   # One Pixel Attack (run_opa.py, opa.py, utils.py)
 ├── scripts/
 │   ├── get_dataset.py     # Download/set up CASIA-WebFace (data/casia_webface/, data/eval/)
 │   ├── extract_rec_to_folders.py   # Optional: unpack train.rec to folder-per-identity .jpg (data/casia_webface_extracted/)
 │   ├── arcface_eval_bin.py        # Evaluate ArcFace on .bin verification pairs (LFW, AgeDB, etc.)
-│   └── run_cw_attack.py           # Run C&W attack on ArcFace with CASIA face images
-├── src/                   # Code: verification, attacks, training
+│   ├── run_cw_attack.py           # Run C&W attack on ArcFace with CASIA face images
+│   ├── run_pgd_attack.py          # Run PGD attack on ArcFace with CASIA face images
+│   └── run_opa.py                 # Run One Pixel attack (CLI entry)
+├── src/                   # Code: verification, attacks (e.g. carlini_wagner, pgd, opa), training
 ├── tests/                 # Unit tests (e.g. test_carlini_wagner.py)
 ├── data/                  # casia_webface/, eval/; optional casia_webface_extracted/ (gitignored)
-├── opa_images/            # Output from One Pixel attack
 ├── results/               # Logs, metrics, figures
 └── requirements.txt       # Python dependencies
 ```
@@ -185,5 +185,5 @@ aibs_project/
 3. Run tests: `pytest tests/` (some tests require extracted data)
 4. Run C&W attack: `python scripts/run_cw_attack.py --data data/casia_webface_extracted`  
    (Requires ArcFace model w600k_r50.onnx; run `arcface_eval_bin.py` once with FaceAnalysis to download.)
-5. Run One Pixel attack: `python -m opa.run_opa` (uses data/casia_webface_extracted and outputs to opa_images/)
+5. Run One Pixel attack: `python scripts/run_opa.py` (uses data/casia_webface_extracted; see script help for output paths)
 6. Use the checklist above to assign tasks and set deadlines; update this README as you go.
