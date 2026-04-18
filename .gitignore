@@ -40,11 +40,7 @@ build/
 *.swp
 *.swo
 
-# Results and logs (optional: remove if you want to track)
-results/*.png
-results/*.csv
-results/*.json
-!results/.gitkeep
+results/
 
 # OS
 .DS_Store
