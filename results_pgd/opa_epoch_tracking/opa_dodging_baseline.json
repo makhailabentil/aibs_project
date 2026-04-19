@@ -1,0 +1,17 @@
+{
+  "label": "baseline",
+  "mode": "dodging",
+  "threshold": 0.4002,
+  "n_images": 1,
+  "n_success": 0,
+  "success_rate": 0.0,
+  "avg_sim_orig_adv": 0.8581091165542603,
+  "per_image": [
+    {
+      "image": "data/casia_webface_extracted/0000045/001.jpg",
+      "sim_orig_adv": 0.8581091165542603,
+      "sim_target_adv": null,
+      "succeeded": false
+    }
+  ]
+}

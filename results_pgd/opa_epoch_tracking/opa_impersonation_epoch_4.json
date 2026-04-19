@@ -1,0 +1,17 @@
+{
+  "label": "epoch_4",
+  "mode": "impersonation",
+  "threshold": 0.4002,
+  "n_images": 1,
+  "n_success": 0,
+  "success_rate": 0.0,
+  "avg_sim_orig_adv": 0.9978941082954407,
+  "per_image": [
+    {
+      "image": "data/casia_webface_extracted/0000045/001.jpg",
+      "sim_orig_adv": 0.9978941082954407,
+      "sim_target_adv": -0.02942558377981186,
+      "succeeded": false
+    }
+  ]
+}

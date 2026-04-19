@@ -1,0 +1,104 @@
+[
+  {
+    "label": "baseline",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.8581091165542603,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.8581091165542603,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  },
+  {
+    "label": "epoch_1",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.98451167345047,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.98451167345047,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  },
+  {
+    "label": "epoch_2",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.9849353432655334,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.9849353432655334,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  },
+  {
+    "label": "epoch_3",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.988964319229126,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.988964319229126,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  },
+  {
+    "label": "epoch_4",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.9908207654953003,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.9908207654953003,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  },
+  {
+    "label": "epoch_5",
+    "mode": "dodging",
+    "threshold": 0.4002,
+    "n_images": 1,
+    "n_success": 0,
+    "success_rate": 0.0,
+    "avg_sim_orig_adv": 0.9884599447250366,
+    "per_image": [
+      {
+        "image": "data/casia_webface_extracted/0000045/001.jpg",
+        "sim_orig_adv": 0.9884599447250366,
+        "sim_target_adv": null,
+        "succeeded": false
+      }
+    ]
+  }
+]
