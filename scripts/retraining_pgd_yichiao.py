@@ -65,7 +65,7 @@ class ArcFaceClassifier(nn.Module):
 
     def forward(self, x):
         emb = self.backbone(x)              # [B, 512]
-        emb = F.normalize(emb, p=2, dim=1) # same style as verification
+        emb = F.normalize(emb, p=2, dim=1)
         logits = self.classifier(emb)
         return logits, emb
 
@@ -78,17 +78,12 @@ def pgd_attack_for_training(
     alpha: float = 1 / 255,
     steps: int = 3,
 ):
-    """
-    PGD for adversarial training using CE loss.
-    This is different from your existing verification-style PGD attack.
-    """
     was_training = model.training
     model.eval()
 
     x_orig = x.detach()
     x_adv = x_orig.clone()
 
-    # random start
     x_adv = x_adv + torch.empty_like(x_adv).uniform_(-eps, eps)
     x_adv = torch.clamp(x_adv, 0.0, 1.0)
 
@@ -165,10 +160,26 @@ def quick_train_acc(model, loader, device, max_batches: int = 20):
     return correct / max(1, total)
 
 
+def save_checkpoint(model, dataset, args, out_dir: Path, name: str):
+    """Save a checkpoint in the standard format used by the project."""
+    save_path = out_dir / name
+    torch.save(
+        {
+            "backbone_state_dict": model.backbone.state_dict(),
+            "classifier_state_dict": model.classifier.state_dict(),
+            "class_to_idx": dataset.class_to_idx,
+            "args": vars(args),
+        },
+        save_path,
+    )
+    print(f"  Saved checkpoint: {save_path}")
+    return save_path
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, required=True, help="Path to data/casia_webface_extracted")
-    parser.add_argument("--onnx", type=str, default=None, help="Path to w600k_r50.onnx")
+    parser.add_argument("--data", type=str, required=True)
+    parser.add_argument("--onnx", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -181,6 +192,10 @@ def main():
     parser.add_argument("--max_imgs_per_class", type=int, default=20)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--save_name", type=str, default="arcface_pgd_adv_train.pt")
+    # NEW: save a checkpoint after every epoch so OPA tracking can evaluate
+    # robustness at each training step. Set to False to disable.
+    parser.add_argument("--save_per_epoch", action="store_true", default=False,
+                        help="Save a checkpoint after each epoch for OPA epoch tracking.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -220,6 +235,9 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    out_dir = ROOT / "results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     for epoch in range(args.epochs):
         avg_loss = train_one_epoch(
             model=model,
@@ -235,21 +253,15 @@ def main():
         acc = quick_train_acc(model, loader, device=device)
         print(f"Epoch {epoch+1}/{args.epochs} | loss={avg_loss:.4f} | quick_train_acc={acc:.4f}")
 
-    out_dir = ROOT / "results"
-    out_dir.mkdir(parents=True, exist_ok=True)
+        # Save a per-epoch checkpoint so run_opa_epoch_tracking.py can load
+        # each intermediate state and measure OPA robustness over training.
+        if args.save_per_epoch:
+            stem = Path(args.save_name).stem
+            epoch_name = f"{stem}_epoch{epoch+1}.pt"
+            save_checkpoint(model, dataset, args, out_dir, epoch_name)
 
-    save_path = out_dir / args.save_name
-    torch.save(
-        {
-            "backbone_state_dict": model.backbone.state_dict(),
-            "classifier_state_dict": model.classifier.state_dict(),
-            "class_to_idx": dataset.class_to_idx,
-            "args": vars(args),
-        },
-        save_path,
-    )
-
-    print(f"Saved checkpoint to: {save_path}")
+    # Always save the final checkpoint under the requested name
+    save_checkpoint(model, dataset, args, out_dir, args.save_name)
 
 
 if __name__ == "__main__":
